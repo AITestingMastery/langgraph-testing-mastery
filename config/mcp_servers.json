@@ -1,0 +1,19 @@
+{
+  "jira": {
+    "command": "uvx",
+    "args": ["mcp-atlassian"],
+    "transport": "stdio",
+    "env": {
+      "JIRA_URL": "${JIRA_URL}",
+      "JIRA_USERNAME": "${JIRA_USERNAME}",
+      "JIRA_API_TOKEN": "${JIRA_API_TOKEN}",
+      "ENABLED_TOOLS": "jira_search,jira_get_issue,jira_create_issue,jira_update_issue,jira_add_comment"
+    }
+  },
+  "gmail": {
+    "command": "uvx",
+    "args": ["--with", "mcp<2", "--from", "mcp-google-gmail", "mcp-google-gmail"],
+    "transport": "stdio",
+    "env": { "GMAIL_CREDENTIALS_PATH": "${GMAIL_CREDENTIALS_PATH}" }
+  }
+}

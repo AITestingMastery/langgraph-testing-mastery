@@ -59,7 +59,7 @@ class RecordingTool:
 
 
 FULL_CHAIN = ("Find the Chrome login bug in our docs, format it as a bug report, create a Jira "
-              "ticket for it in TEST, and email a summary to karthik1998.rp@gmail.com.")
+              "ticket for it in TEST, and email a summary to qa.lead@gmail.com.")
 
 
 @pytest.fixture
@@ -320,7 +320,7 @@ def test_allowed_domains_read_at_call_time(monkeypatch):
 @pytest.mark.parametrize("req,expected", [
     (FULL_CHAIN, ["jira", "comms"]),
     ("Log the password reset delay as a bug in TEST.", ["jira"]),
-    ("Find open bugs and email a summary to karthik1998.rp@gmail.com.", ["comms"]),
+    ("Find open bugs and email a summary to qa.lead@gmail.com.", ["comms"]),
     ("What known bugs affect the login page?", []),
     ("Give me a thorough answer: what are ALL the login-related risks, bugs, and API issues?", []),
     ("Add a comment to TEST-53 saying it is fixed.", ["jira"]),

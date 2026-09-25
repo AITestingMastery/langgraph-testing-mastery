@@ -4,6 +4,9 @@
 reviewer sends weak work back for another try, guardrails block unsafe actions,
 and a human approves every real action (Jira tickets, emails) before it happens.
 
+> 🆕 **New here? Start with [SETUP.md](SETUP.md)** — a step-by-step guide from nothing
+> installed to every feature working, for macOS and Windows.
+
 Part of the **[AI Testing Mastery](https://github.com/AITestingMastery)** curriculum:
 
 ```
@@ -29,7 +32,7 @@ layer adds.
 ## Contents
 
 1. [What it does](#1-what-it-does)
-2. [Quick start](#2-quick-start)
+2. [Quick start](#2-quick-start) (full walkthrough: [SETUP.md](SETUP.md))
 3. [Configuration (`.env`)](#3-configuration-env)
 4. [Connecting Jira and Gmail](#4-connecting-jira-and-gmail)
 5. [How it works](#5-how-it-works)
@@ -65,6 +68,10 @@ step took, and a direct link to the LangSmith trace**.
 
 ## 2. Quick start
 
+> This is the short version for people who already have Python and uv. For
+> step-by-step instructions — installing the tools, getting every key, connecting Jira,
+> Gmail and LangSmith, and a guided tour of each feature — follow **[SETUP.md](SETUP.md)**.
+
 **Prerequisites:** Python 3.12, [`uv`](https://docs.astral.sh/uv/) (the MCP servers are
 launched with `uvx`), and an OpenAI API key.
 
@@ -78,7 +85,7 @@ python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt          # or: uv pip install -r requirements.txt
 
-cp .env.example .env                     # then edit .env (see section 3)
+cp .env.example .env                     # then set OPENAI_API_KEY (see section 3)
 python -m pytest tests -q                # offline — no keys needed
 streamlit run app.py
 ```
@@ -102,8 +109,8 @@ Open **http://localhost:8501**, then click any button under **💡 Try these**.
 
 > **Only have an OpenAI key?** That's enough to start. Research questions work
 > immediately. Jira and Gmail show 🔴 in the sidebar, and any ticket/email step is
-> reported as *"not performed — not connected"* (never faked). Add them later
-> ([section 4](#4-connecting-jira-and-gmail)).
+> reported as *"not performed — not connected"* (never faked). Add them later —
+> [SETUP.md Parts 6–8](SETUP.md#part-6--connect-jira-optional).
 
 ---
 
@@ -123,7 +130,7 @@ Copy `.env.example` to `.env`. **Never commit `.env`** — it's in `.gitignore`.
 | `GMAIL_CREDENTIALS_PATH` | for Gmail | `./gmail_credentials.json` | Google OAuth client file |
 | `ALLOWED_EMAIL_DOMAINS` | | `gmail.com,example.com` | Email may only be sent to these domains (guardrail) |
 | `DEFAULT_EMAIL_TO` | | — | Recipient for *"email **me** …"* requests |
-| `LANGSMITH_TRACING` | | — | `true` to enable tracing + trace links |
+| `LANGSMITH_TRACING` | | `false` | `true` to enable tracing + trace links |
 | `LANGSMITH_API_KEY` | with tracing | — | **Needed together with** `LANGSMITH_TRACING` |
 | `LANGSMITH_PROJECT` | | `default` | LangSmith project name |
 | `LANGSMITH_ENDPOINT` | | US endpoint | Only for EU accounts: `https://eu.api.smith.langchain.com` |
@@ -131,6 +138,7 @@ Copy `.env.example` to `.env`. **Never commit `.env`** — it's in `.gitignore`.
 | `MAX_STEPS` | | `8` | Max supervisor decisions per request (runaway protection) |
 | `MCP_PERSISTENT_SESSIONS` | | `true` | Keep one MCP session per server open (fast). `false` = new session per call (slow) |
 
+`.env.example` is grouped into **required** and **optional** sections with comments.
 All values are read **when they're used**, not at import time — so a value in `.env`
 always applies (see [lesson #3](#12-lessons-learned-bugs-we-hit-and-fixed)).
 
@@ -140,6 +148,10 @@ always applies (see [lesson #3](#12-lessons-learned-bugs-we-hit-and-fixed)).
 
 Both are **MCP servers** defined in `config/mcp_servers.json` and launched
 automatically with `uvx` — nothing to install separately.
+
+Step-by-step instructions are in
+**[SETUP.md → Part 6 (Jira)](SETUP.md#part-6--connect-jira-optional)** and
+**[Part 7 (Gmail)](SETUP.md#part-7--connect-gmail-optional)**. The summary:
 
 **Jira** ([mcp-atlassian](https://github.com/sooperset/mcp-atlassian)) — set `JIRA_URL`,
 `JIRA_USERNAME`, `JIRA_API_TOKEN` and `JIRA_PROJECT_KEY` in `.env`. Only five tools are
@@ -318,7 +330,8 @@ python -m pytest tests -q        # 58 tests, ~10s, no API keys, no network
 LLM decisions are scripted with fakes, so each scenario is deterministic. The **real**
 graph wiring, guardrails, interrupts and checkpointer are exercised.
 
-For live checks, use the question bank in **[QUESTIONS.md](QUESTIONS.md)** — it's grouped
+For a guided walkthrough of every feature, see
+[SETUP.md → Part 9](SETUP.md#part-9--guided-tour-try-every-feature). For more live checks, use the question bank in **[QUESTIONS.md](QUESTIONS.md)** — it's grouped
 by feature, with the expected trail for each and a 7-minute demo flow.
 
 ---
@@ -349,6 +362,7 @@ langgraph-testing-mastery/
 ├── sample_docs/            the QA knowledge base (test plans, known bugs, API cases)
 ├── config/mcp_servers.json MCP server definitions
 ├── tests/                  58 offline tests
+├── SETUP.md                step-by-step setup & user guide (start here)
 ├── QUESTIONS.md            question bank + demo flow
 ├── requirements.txt
 └── .env.example
@@ -374,6 +388,9 @@ langgraph-testing-mastery/
 ---
 
 ## 11. Troubleshooting
+
+More cases (installation, Google sign-in, ports) are in
+[SETUP.md → Part 13](SETUP.md#part-13--troubleshooting).
 
 | Symptom | Cause / fix |
 |---|---|

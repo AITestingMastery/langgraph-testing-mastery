@@ -106,7 +106,7 @@ def summarize_turn(state: dict) -> dict:
 def langsmith_enabled() -> bool:
     tracing = (os.getenv("LANGSMITH_TRACING") or os.getenv("LANGCHAIN_TRACING_V2") or "").lower()
     key = os.getenv("LANGSMITH_API_KEY") or os.getenv("LANGCHAIN_API_KEY")
-    return tracing == "true" and bool(key)
+    return tracing == "true" and bool(key) and "your-key" not in key
 
 
 def langsmith_project() -> str:

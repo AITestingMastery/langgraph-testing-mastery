@@ -40,7 +40,7 @@ STATUS_ICON = {"ok": "✅", "blocked": "🛡️", "error": "❌"}
 
 EXAMPLES = [
     ("🔁 Self-correcting loop", "Give me a thorough answer: what are ALL the login-related risks, bugs, and API issues?"),
-    ("⭐ Full chain (2 approvals)", "Find the Chrome login bug in our docs, format it as a bug report, create a Jira ticket for it in TEST, and email a summary to karthik1998.rp@gmail.com."),
+    ("⭐ Full chain (2 approvals)", "Find the Chrome login bug in our docs, format it as a bug report, create a Jira ticket for it in TEST, and email me a summary."),
     ("📚 Research only", "What known bugs affect the login page?"),
     ("🗂️ Jira (approve/cancel)", "Find the session timeout bug and create a Jira ticket for it in TEST."),
     ("✉️ Email me", "Find open bugs and email me a summary."),

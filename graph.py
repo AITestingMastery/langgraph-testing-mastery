@@ -12,7 +12,7 @@ Flow:
                             │                                  ▼
                             └───────────── quality ◀───────────┘
                                    (grades the LAST step; weak → supervisor retries it)
-  supervisor → done → finalize → END   (only the supervisor can end the run)
+  supervisor → done → finalize → output_guard → END   (only the supervisor can end the run)
 
 Real actions (jira, comms) are gated: the graph interrupts BEFORE those nodes so
 the app can ask the user to approve.
@@ -34,7 +34,7 @@ from agents.bug_agent import make_bug_node
 from agents.jira_agent import make_jira_node
 from agents.comms_agent import make_comms_node
 from quality import quality_node
-from guardrails import guardrail_node, entry_guard_node
+from guardrails import entry_guard_node, guardrail_node, output_guard_node
 
 
 def _finalize_node(state: dict) -> dict:
@@ -147,6 +147,7 @@ def build_graph(native_tools, jira_tools, gmail_tools, checkpointer=None):
     g.add_node("comms", _timed("comms", make_comms_node(gmail_send)))
     g.add_node("quality", _timed("quality", quality_node))
     g.add_node("finalize", _timed("finalize", _finalize_node))
+    g.add_node("output_guard", _timed("output_guard", output_guard_node))
 
     # edges — every request passes the entry guardrail BEFORE the supervisor
     g.add_edge(START, "entry_guard")
@@ -172,7 +173,9 @@ def build_graph(native_tools, jira_tools, gmail_tools, checkpointer=None):
     # quality ALWAYS hands back to the supervisor (the CYCLE). The supervisor then
     # retries a weak step, moves on to the next one, or ends with 'done'.
     g.add_edge("quality", "supervisor")
-    g.add_edge("finalize", END)
+    # output guard: last check on the answer (redaction + claim verification)
+    g.add_edge("finalize", "output_guard")
+    g.add_edge("output_guard", END)
 
     # gate the real-action nodes: pause before they run so the app can approve
     return g.compile(

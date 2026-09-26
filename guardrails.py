@@ -150,3 +150,156 @@ def guardrail_node(state: dict) -> dict:
                 "trail": [f"🛡️ guardrail: jira action allowed (project {allowed_jira_project()})"]}
 
     return {"guardrail_block": False, "trail": ["🛡️ guardrail: passed"]}
+
+
+# =====================================================================
+# Layer 4 — TOOL-RESULT guard (indirect prompt injection)
+# ---------------------------------------------------------------------
+# Text that comes BACK from tools (docs, Jira tickets) is data written by
+# someone else. If it contains instructions aimed at the AI, remove those
+# lines before the LLM ever reads them.
+# =====================================================================
+TOOL_INJECTION_PATTERNS = [
+    r"\b(ai|assistant|agent|llm|model|chatbot|bot)s?\b[^.\n]{0,60}\b(must|should|need to|are required to|shall|have to)\b",
+    r"ignore\s+(all\s+|the\s+|your\s+|any\s+)?(previous\s+|prior\s+|above\s+|earlier\s+)?(instructions|rules|prompts|guidelines)",
+    r"disregard\s+[^.\n]{0,40}\b(instructions|rules|policy|policies|guidelines)",
+    r"\b(you are now|new instructions|system prompt|developer mode)\b",
+    r"\b(email|send|forward|exfiltrate|upload)\b[^.\n]{0,60}\bto\b[^.\n]{0,25}[\w.\-+]+@[\w.\-]+",
+    r"\bdo not (tell|inform|mention)\b[^.\n]{0,30}\b(user|anyone|them)\b",
+]
+_TOOL_INJ = [re.compile(p, re.I) for p in TOOL_INJECTION_PATTERNS]
+REMOVED_LINE = "[⚠️ removed by guardrail: this line looked like instructions aimed at the AI]"
+
+
+def is_read_tool(name: str) -> bool:
+    """Tools whose results come from outside content (docs, tickets, mail) — those get
+    scanned. Our own action confirmations (send/create/update) and pure formatters don't."""
+    if name in ("search_docs", "check_duplicate_bug"):
+        return True
+    return any(k in name for k in ("search", "get", "list", "read"))
+
+
+def scan_tool_result(text: str) -> list[str]:
+    """Return the suspicious lines found in a tool result (empty list = clean)."""
+    hits = []
+    for line in (text or "").splitlines():
+        if any(p.search(line) for p in _TOOL_INJ):
+            hits.append(line.strip()[:160])
+    return hits
+
+
+def sanitize_tool_result(text: str) -> tuple[str, list[str]]:
+    """Remove suspicious lines; return (clean_text, flags)."""
+    flags, out = [], []
+    for line in (text or "").splitlines():
+        if any(p.search(line) for p in _TOOL_INJ):
+            flags.append(line.strip()[:160])
+            out.append(REMOVED_LINE)
+        else:
+            out.append(line)
+    return "\n".join(out), flags
+
+
+# =====================================================================
+# Layer 5 — OUTPUT guard (the final answer shown to the user)
+# ---------------------------------------------------------------------
+#  * redacts secrets, phone numbers, and email addresses that are neither in an
+#    allowed domain nor typed by the user
+#  * verifies claims: every ticket key / "ticket created" / "email sent" in the
+#    answer must match what the tools actually did (state["tool_log"])
+# =====================================================================
+OUTPUT_SECRET_RE = re.compile(
+    r"\b(sk-(?:ant-|proj-)?[A-Za-z0-9_\-]{16,}|lsv2_[A-Za-z0-9_]{16,}|ATATT[A-Za-z0-9_\-=]{16,}"
+    r"|gh[pous]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9\-]{10,})")
+PHONE_RE = re.compile(r"(?<![\w-])\+?\d[\d \-().]{8,}\d(?![\w-])")
+_NEGATION = re.compile(r"\b(not|no|never|wasn't|weren't|isn't|didn't|blocked|declined|skipped|cancel\w*|failed)\b", re.I)
+_EMAIL_CLAIM = re.compile(r"\b(e-?mail|message)\b[^.\n]{0,50}\b(sent|delivered)\b|\bsent\b[^.\n]{0,40}\be-?mail\b", re.I)
+_TICKET_CLAIM = re.compile(r"\b(created|filed|opened|raised|logged)\b[^.\n]{0,50}"
+                           r"(\b(ticket|issue)\b|\b[A-Z][A-Z0-9]+-\d+\b)"
+                           r"|\b(ticket|issue)\b[^.\n]{0,50}\b(created|filed|opened|raised)\b", re.I)
+
+
+def output_guard_enabled() -> bool:
+    return os.getenv("OUTPUT_GUARD", "true").lower() != "false"
+
+
+def redact_output(text: str, request: str = "") -> tuple[str, list[str]]:
+    """Redact secrets, phone numbers and unapproved email addresses."""
+    flags: list[str] = []
+
+    def _secret(m):
+        flags.append("redacted a secret / API key")
+        return "[REDACTED secret]"
+    text = OUTPUT_SECRET_RE.sub(_secret, text)
+
+    allowed_domains = set(allowed_email_domains())
+    typed = {a.lower() for a in EMAIL_RE.findall(request or "")}
+
+    def _email(m):
+        addr = m.group(0)
+        if addr.lower() in typed or addr.rsplit("@", 1)[-1].lower() in allowed_domains:
+            return addr
+        flags.append(f"redacted an email address outside the allowed domains")
+        return "[REDACTED email]"
+    text = EMAIL_RE.sub(_email, text)
+
+    def _phone(m):
+        digits = re.sub(r"\D", "", m.group(0))
+        if 10 <= len(digits) <= 15:
+            flags.append("redacted a phone number")
+            return "[REDACTED phone]"
+        return m.group(0)
+    text = PHONE_RE.sub(_phone, text)
+    return text, flags
+
+
+def _sentences(text: str) -> list[str]:
+    return [s for s in re.split(r"(?<=[.!?])\s+|\n+", text) if s.strip()]
+
+
+def verify_claims(text: str, state: dict) -> tuple[str, list[str]]:
+    """Check what the answer CLAIMS against what the tools actually DID."""
+    log = state.get("tool_log", []) or []
+    ok = [e for e in log if e.get("status") == "ok"]
+    verified_keys = {s["label"] for e in ok for s in e.get("sources", []) if s.get("kind") == "jira"}
+    sent = any(("send" in e["tool"]) and e["tool"].startswith("gmail") for e in ok)
+    created = any(e["tool"] in ("jira_create_issue",) for e in ok)
+    flags: list[str] = []
+
+    project = allowed_jira_project()
+    for key in sorted(set(re.findall(rf"\b{re.escape(project)}-\d+\b", text))):
+        if key not in verified_keys:
+            flags.append(f"{key} is mentioned but no tool returned it")
+            text = re.sub(rf"\b{re.escape(key)}\b(?! \(⚠️)", f"{key} (⚠️ unverified)", text)
+
+    for sentence in _sentences(text):
+        if _NEGATION.search(sentence):
+            continue
+        if _EMAIL_CLAIM.search(sentence) and not sent:
+            flags.append("the answer says an email was sent, but no send was recorded")
+            break
+    for sentence in _sentences(text):
+        if _NEGATION.search(sentence):
+            continue
+        if _TICKET_CLAIM.search(sentence) and not created and not verified_keys:
+            flags.append("the answer says a ticket was created, but no ticket was created")
+            break
+    return text, flags
+
+
+def output_guard_node(state: dict) -> dict:
+    """Last node before END: clean and fact-check the final answer."""
+    if not output_guard_enabled():
+        return {"trail": ["🛡️ output guard: off (OUTPUT_GUARD=false)"]}
+    final = state.get("final", "") or ""
+    # the Action status block is built from state by code — leave it untouched
+    body, sep, status = final.partition("\n\n---\n**Action status**")
+    body, redactions = redact_output(body, state.get("request", ""))
+    body, claims = verify_claims(body, state)
+    flags = list(dict.fromkeys(redactions + claims))
+    new_final = body + (sep + status if sep else "")
+    if not flags:
+        return {"final": new_final, "trail": ["🛡️ output guard: answer passed"]}
+    new_final += "\n\n---\n**🛡️ Output guard**\n" + "\n".join(f"- {f}" for f in flags)
+    return {"final": new_final, "output_flags": flags,
+            "trail": [f"🛡️ output guard: {len(flags)} issue(s) fixed or flagged — " + "; ".join(flags)[:140]]}

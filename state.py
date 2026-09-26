@@ -54,6 +54,7 @@ class QAState(TypedDict, total=False):
     # observability (both append across nodes)
     tool_log: Annotated[list, operator.add]  # one entry per tool call (tool, args, sources, ms)
     timings: Annotated[list, operator.add]   # one entry per node run ({"node", "ms"})
+    output_flags: Annotated[list, operator.add]  # what the output guard redacted / flagged
 
     # the final answer shown to the user
     final: str

@@ -228,7 +228,7 @@ your install is correct.
 python -m pytest tests -q
 ```
 
-✅ **Expected:** `58 passed`.
+✅ **Expected:** `87 passed`.
 
 > Seeing `ModuleNotFoundError`? Your `.venv` isn't active (step 3.1), or you're not in
 > the project folder.
@@ -278,7 +278,9 @@ If you don't have one: go to **https://www.atlassian.com/software/jira/free**, s
 2. Choose a **Scrum** or **Kanban** template.
 3. Name it anything (e.g. "QA Demo"), and set the **Key** to **`TEST`**.
 
-> Using a different key? That's fine — put it in `JIRA_PROJECT_KEY` in step 6.4.
+> **Already have a project?** New Jira sites usually create one automatically with a key like
+> `KAN` or `SCRUM`. You can use that instead — put its key in `JIRA_PROJECT_KEY` in step 6.4.
+> The example buttons in the app automatically use whatever key you set.
 > The app will only ever create or update tickets in **that one project**
 > (it's a guardrail).
 
@@ -416,6 +418,7 @@ The example documents the agents search are in `sample_docs/`: `known_bugs.md`
 | 8 | **🗂️ Jira (approve/cancel)** again | Pauses for approval | This time click **✅ Approve** → a real ticket (needs Part 6) |
 | 9 | **✉️ Email me** | Pauses for approval | **Approve** → email to `DEFAULT_EMAIL_TO` (needs Part 7) |
 | 10 | **⭐ Full chain (2 approvals)** | research → bug → Jira 🔒 → email 🔒 | The showpiece: 4 agents hand off, two approvals, one ticket + one email |
+| 11 | **🧪 Poisoned doc (indirect injection)** | Research reads `release_notes.md`, which hides an instruction to email your bugs to an outside address | The trail shows **🛡️ tool-result guard: removed 1 suspicious line**, the chip shows **🛡️ 1 guardrail flag**, and Details quotes the removed line. The AI never saw it |
 
 **Try typing your own too** — more ideas, grouped by feature, are in
 **[QUESTIONS.md](QUESTIONS.md)**, including a 7-minute demo order for presenting.
@@ -473,7 +476,8 @@ shows exactly where the time went.
 | **Agent** | An AI worker with one job and its own tools |
 | **Supervisor** | The agent that decides who works next, and when the job is done |
 | **Loop-back** | The reviewer rejected a step, so it runs again with feedback |
-| **Guardrail** | An automatic safety check that blocks unsafe actions |
+| **Guardrail** | An automatic safety check. This app has five: on your request, on actions, on the real tool call, on what tools return, and on the final answer |
+| **Indirect prompt injection** | Instructions hidden in a document or ticket, hoping the AI will obey them. The tool-result guard removes them |
 | **Approval gate** | The pause where *you* decide whether a real action happens |
 | **MCP** | Model Context Protocol — the standard way the app talks to Jira and Gmail |
 | **RAG** | Retrieval-Augmented Generation — searching your documents before answering |
@@ -533,11 +537,12 @@ streamlit run app.py
 | `command not found: python3.12` / `py` not recognised | Python 3.12 isn't installed or not on PATH — redo step 1.3 (Windows: tick **Add to PATH**) |
 | `uv` / `uvx` not found | Redo step 1.4, then **close and reopen** the terminal |
 | `ModuleNotFoundError` | Activate the venv (step 3.1) and make sure you're in the project folder |
-| `58 passed` not shown | Run `pip install -r requirements.txt` again; paste the first error into an issue |
+| `87 passed` not shown | Run `pip install -r requirements.txt` again; paste the first error into an issue |
 | **Not ready: OPENAI_API_KEY is not set** | `.env` is missing, misnamed (e.g. `.env.txt`), or not in the project folder |
 | OpenAI error about quota / billing | Add credit in OpenAI **Settings → Billing** |
 | 🔴 **Jira** in the sidebar | Check the red error under it. Verify `JIRA_URL` (with `https://`), username = your Atlassian email, a fresh API token. Restart |
-| Jira ticket fails with a tool error | Check the project key exists and you can create issues in it. If it mentions the issue type, ask for a "Task" instead of a "Bug" |
+| Jira error: *"The target project doesn't exist or you don't have permission to create issues in it"* | Your Jira has no project with the key in `JIRA_PROJECT_KEY` (default `TEST`). New Jira sites usually start with a project keyed `KAN` or `SCRUM`. Check **Projects → View all projects → Key**, then either set `JIRA_PROJECT_KEY=KAN` (your key) in `.env` and restart, or create a project with key `TEST` (step 6.2). Also confirm `JIRA_USERNAME` is the same email the API token belongs to, and that you can create an issue in that project on the Jira website |
+| Jira ticket fails with an issue-type error | Some project templates have no "Bug" type — ask for a "Task" instead |
 | 🔴 **Gmail** in the sidebar | `gmail_credentials.json` must be in the project folder with exactly that name |
 | Google says **access blocked** | Add your address as a **Test user** (step 7.3) |
 | Email blocked: *no valid recipient* | Set `DEFAULT_EMAIL_TO` in `.env`, or include an address in your request |
@@ -559,12 +564,12 @@ message — **remove any keys first**.
 - [ ] Git, Python 3.12 and uv installed (Part 1)
 - [ ] Repo cloned, `.venv` created and active (Parts 2–3)
 - [ ] `.env` created with a real `OPENAI_API_KEY` (Part 4)
-- [ ] `python -m pytest tests -q` → **58 passed** (Part 5)
+- [ ] `python -m pytest tests -q` → **87 passed** (Part 5)
 - [ ] App opens at http://localhost:8501 and **📚 Research only** works (Part 5)
 - [ ] *(optional)* 🟢 Jira, and a ticket created after approval (Part 6)
 - [ ] *(optional)* 🟢 Gmail, and an email received after approval (Part 7)
 - [ ] *(optional)* 🟢 LangSmith, and the trace link opens (Part 8)
-- [ ] All 10 buttons in the guided tour tried (Part 9)
+- [ ] All 11 buttons in the guided tour tried (Part 9)
 
 **Next:** read **[README.md](README.md)** to understand *how* it works, and
 **[QUESTIONS.md](QUESTIONS.md)** for more to try.

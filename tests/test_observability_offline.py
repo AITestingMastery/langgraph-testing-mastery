@@ -158,7 +158,8 @@ def test_graph_records_timings_per_node(monkeypatch):
     state = g.invoke({"request": "What known bugs affect login?", "trail": [], "timings": [],
                       "tool_log": []}, {"configurable": {"thread_id": "t"}})
     nodes = [t["node"] for t in state["timings"]]
-    assert nodes == ["entry_guard", "supervisor", "research", "quality", "supervisor", "finalize"]
+    assert nodes == ["entry_guard", "supervisor", "research", "quality", "supervisor", "finalize",
+                     "output_guard"]
     assert all(isinstance(t["ms"], int) for t in state["timings"])
 
 

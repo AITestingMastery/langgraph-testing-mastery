@@ -99,6 +99,8 @@ def summarize_turn(state: dict) -> dict:
         "slowest": slowest,
         "llm_calls": sum(e.get("llm_calls", 0) for e in timings) or None,
         "loops": sum("loop back" in t for t in state.get("trail", [])),
+        "flagged_tools": [e for e in log if e.get("flags")],
+        "output_flags": list(state.get("output_flags", []) or []),
     }
 
 

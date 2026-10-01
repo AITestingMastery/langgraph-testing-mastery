@@ -34,7 +34,8 @@ from agents.bug_agent import make_bug_node
 from agents.jira_agent import make_jira_node
 from agents.comms_agent import make_comms_node
 from quality import quality_node
-from guardrails import entry_guard_node, guardrail_node, output_guard_node
+import audit
+from guardrails import entry_guard_node, guardrail_node, output_guard_node, scope_message
 
 
 def _finalize_node(state: dict) -> dict:
@@ -54,17 +55,24 @@ def _finalize_node(state: dict) -> dict:
     if state.get("bug_report"): facts.append("Bug report:\n" + state["bug_report"])
     if state.get("jira_result"): facts.append("Jira result:\n" + state["jira_result"])
     if state.get("email_result"): facts.append("Email result:\n" + state["email_result"])
+    facts = _action_facts(state) + facts
 
+    if not facts and state.get("budget_stop"):
+        return {"final": f"💰 Stopped before any work was done: {state['budget_stop']}.",
+                "trail": ["🏁 finalized (stopped by the cost budget)"]}
     if not facts:
-        return {"final": "No action was taken for this request.",
-                "trail": ["🏁 finalized (nothing to report)"]}
+        # (5) scope guard: nothing in the request was QA work — say what we CAN do
+        return {"final": scope_message(),
+                "trail": ["🧭 scope guard: outside this QA assistant's scope — nothing was run",
+                          "🏁 finalized (nothing to report)"]}
 
     model = get_model(state.get("provider"))
     msg = model.invoke([
         ("system", "Summarize the outcome for the user using ONLY the facts given. "
                    "Do NOT claim any Jira ticket or email unless it appears in the facts. "
                    "If an action was declined by the user or blocked by a guardrail, say "
-                   "so plainly — never describe it as unnecessary or as your own choice."),
+                   "so plainly — never describe it as unnecessary or as your own choice, and "
+                   "give ONLY the reason stated in the facts; never invent a reason."),
         ("human", f"Request: {state['request']}\n\nFacts (only these happened):\n"
                   + "\n\n".join(facts)),
     ])
@@ -75,18 +83,46 @@ def _finalize_node(state: dict) -> dict:
     return {"final": final, "trail": ["🏁 finalized"]}
 
 
+def _action_facts(state: dict) -> list[str]:
+    """What the TOOLS actually did, stated first and exactly — so the summary never
+    has to guess between an old ticket found by search and the one just created."""
+    ok = [e for e in (state.get("tool_log") or []) if e.get("status") == "ok"]
+    created = [s["label"] for e in ok if e.get("tool") == "jira_create_issue"
+               for s in e.get("sources", []) if s.get("kind") == "jira"]
+    sent_to = [s["label"] for e in ok if str(e.get("tool", "")).startswith("gmail") and "send" in e["tool"]
+               for s in e.get("sources", []) if s.get("kind") == "email"]
+    out = []
+    if created:
+        out.append("VERIFIED — ticket(s) created by the Jira tool in this request: "
+                   + ", ".join(dict.fromkeys(created))
+                   + ". Use exactly these keys when saying a ticket was created; any other "
+                   "key in the facts below is an EXISTING ticket found by search.")
+    if sent_to:
+        out.append("VERIFIED — email sent by the Gmail tool to: " + ", ".join(dict.fromkeys(sent_to)))
+    return out
+
+
+def _unwrap(line: str) -> str:
+    """'(blocked: reason (KEY))' -> 'blocked: reason (KEY)' — remove only the OUTER brackets."""
+    return line[1:-1] if line.startswith("(") and line.endswith(")") else line.lstrip("(")
+
+
 def _action_status(state: dict) -> list[str]:
-    """Deterministic status lines for real actions that did NOT happen — built from
+    """Deterministic status lines for real actions that did NOT fully happen — built from
     state, never from the LLM, so a decline is never reworded as 'unnecessary'."""
     out = []
     for label, key in (("Jira", "jira_result"), ("Email", "email_result")):
         first = (state.get(key) or "").splitlines()[0] if state.get(key) else ""
         if first.startswith("(declined"):
             out.append(f"⛔ {label}: declined by you — not performed")
+        elif first.startswith("(partial"):
+            out.append(f"⚠️ {label}: {_unwrap(first)[len('partial: '):]}")
         elif first.startswith("(blocked"):
-            out.append(f"🛡️ {label}: {first.strip('()')}")
+            out.append(f"🛡️ {label}: {_unwrap(first)}")
         elif first.startswith("(not performed"):
-            out.append(f"🔴 {label}: {first.strip('()')}")
+            out.append(f"🔴 {label}: {_unwrap(first)}")
+    if state.get("budget_stop"):
+        out.append(f"💰 Stopped early: {state['budget_stop']}")
     return out
 
 
@@ -95,6 +131,7 @@ def _timed(name: str, fn):
     This is what the UI's timing panel shows — it makes 'why is it slow?' answerable."""
     @functools.wraps(fn)
     def wrapper(state):
+        audit.set_thread(state.get("thread_id"))      # tag audit events with this request
         t0 = time.perf_counter()
         out = fn(state) or {}
         return {**out, "timings": [{"node": name, "ms": int((time.perf_counter() - t0) * 1000)}]}

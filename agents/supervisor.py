@@ -5,7 +5,7 @@ The supervisor reads the request and the work done so far, and decides which
 specialist runs next — or that the work is complete. It is the ONLY node that can
 end the run (quality always hands control back here).
 
-The LLM makes the decision, but six deterministic rules sit on top of it:
+The LLM makes the decision, but eight deterministic rules sit on top of it:
   1. step cap          — never more than MAX_STEPS routing decisions per request
   2. no repeat actions — a jira/comms step that already ran, was declined, or was
                          blocked is never run again (no duplicate tickets/emails)
@@ -15,6 +15,10 @@ The LLM makes the decision, but six deterministic rules sit on top of it:
                          back-to-back (only a failed quality check justifies a retry)
   5. no unrequested   — jira/comms only run when the request explicitly asks for a
      actions             ticket/email (the LLM can't decide on its own to file one)
+  8. no dropped QA     — a QA question is never ended with "nothing to do"
+     questions
+  7. research first    — jira/comms never run before anything has been gathered
+                         (they would have nothing to file or send)
   6. no unneeded bug   — the bug agent only runs if a bug report was asked for, or a
      report               ticket is about to be filed (saves ~5s of LLM calls otherwise)
 """
@@ -30,6 +34,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from guardrails import EMAIL_RE
+from cost import check_cost_budget
 from llm import get_model
 
 log = logging.getLogger(__name__)
@@ -53,7 +58,11 @@ Routing rules:
 - If quality feedback says the last step was weak, route to that step again.
 - A jira/comms step that shows as done, DECLINED by the user, or BLOCKED by a
   guardrail counts as handled — never route to it again.
-- Choose 'done' only when every requested item is handled."""
+- Choose 'done' only when every requested item is handled.
+- General QA / testing questions ("severity vs priority?", "what is regression testing?")
+  go to 'research' — it answers them from its own knowledge.
+- Only if the request has nothing to do with QA, testing, bugs, our product, Jira or email
+  (e.g. travel, recipes, poems), choose 'done' immediately."""
 
 
 class Decision(BaseModel):
@@ -68,6 +77,12 @@ _JIRA_ASK = re.compile(
     r"|\b(update|comment on|add a comment to|close)\b[^.]*\b[A-Z][A-Z0-9]+-\d+\b",
     re.I)
 _BUG_ASK = re.compile(r"\b(bug report|format\w*|write[- ]?up|write (it )?up|report it)\b", re.I)
+# words that make a request QA work — such a request is never dropped as "off-topic"
+_QA_TOPIC = re.compile(
+    r"\b(test\w*|qa|bugs?|defects?|severity|priority|regression|smoke|sanity|flaky|pytest|"
+    r"selenium|playwright|cypress|automation|jira|tickets?|releases?|release notes|login|api|"
+    r"endpoints?|coverage|requirements?|acceptance|uat|staging|vendors?|exports?|reports?|"
+    r"pipelines?|quality|incidents?|issues?)\b", re.I)
 _EMAIL_ASK = re.compile(r"\b(email|e-mail|mail|send)\b", re.I)
 
 
@@ -109,6 +124,13 @@ def supervisor_node(state: dict) -> dict:
         return {"next_agent": "done", "steps": steps,
                 "trail": [f"🧭 supervisor → done (step limit {MAX_STEPS} reached)"]}
 
+    ok, msg = check_cost_budget(state.get("thread_id"))      # infrastructure: LLM budget
+    if not ok:
+        from audit import audit
+        audit("cost_block", reason=msg)
+        return {"next_agent": "done", "steps": steps, "budget_stop": msg,
+                "trail": [f"💰 cost budget: stopping — {msg}"]}
+
     model = get_model(state.get("provider"))
     nxt, why = _decide(model, [
         ("system", SUPERVISOR_PROMPT),
@@ -128,6 +150,10 @@ def supervisor_node(state: dict) -> dict:
     elif nxt in ("jira", "comms") and nxt not in pending:
         why = f"{nxt} was not requested — skipping"
         nxt = pending[0] if (pending and gathered) else "done"
+    # rule 7: research first — a real action needs gathered content to act on
+    elif nxt in ("jira", "comms") and not gathered:
+        why = f"{nxt} needs gathered facts first — researching before acting"
+        nxt = "research"
     # rule 6: the bug agent only when a report was asked for or will feed a ticket
     elif (nxt == "bug" and not _BUG_ASK.search(state.get("request", ""))
           and "jira" not in pending):
@@ -138,6 +164,10 @@ def supervisor_node(state: dict) -> dict:
           and state.get("quality_ok")):
         why = f"{nxt} just passed quality — not re-running"
         nxt = pending[0] if pending else "done"
+    # rule 8: a QA question is never dropped — if nothing has been done yet, research it
+    elif nxt == "done" and not gathered and not pending and _QA_TOPIC.search(state.get("request", "")):
+        why = "QA question — researching instead of ending with nothing"
+        nxt = "research"
     # rule 3: don't finish while a requested action is still pending
     elif nxt == "done" and pending:
         target = pending[0] if gathered else "research"

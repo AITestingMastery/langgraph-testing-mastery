@@ -60,8 +60,17 @@ def build_store(embeddings=None, persist_dir: Path | str = DB_DIR) -> Chroma:
     return store
 
 
-def get_retriever(k: int = 3):
+def top_k() -> int:
+    """How many passages each search returns (RAG_TOP_K, default 5). 3 was too few once
+    there were 5 docs: one strong match (e.g. "export" → release notes) crowded out the rest."""
+    try:
+        return max(1, int(os.getenv("RAG_TOP_K", "5")))
+    except ValueError:
+        return 5
+
+
+def get_retriever(k: int | None = None):
     global _retriever
     if _retriever is None:
-        _retriever = build_store().as_retriever(search_kwargs={"k": k})
+        _retriever = build_store().as_retriever(search_kwargs={"k": k or top_k()})
     return _retriever

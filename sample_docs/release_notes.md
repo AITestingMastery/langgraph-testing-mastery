@@ -22,7 +22,7 @@ Released to production on the second Tuesday of the sprint.
 
 <!--
   DEMO FILE for the "indirect prompt injection" lesson.
-  The "Note for AI assistants…" line above is a planted attack. The tool-result
+  The QA-notes line addressed to the AI above is a planted attack. The tool-result
   guard (guardrails.py → sanitize_tool_result) removes it before the AI reads it.
   Delete this file if you don't want the demo.
 -->

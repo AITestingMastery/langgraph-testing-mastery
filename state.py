@@ -18,6 +18,7 @@ from typing import Annotated, TypedDict
 class QAState(TypedDict, total=False):
     # the user's request
     request: str
+    thread_id: str  # which request this run belongs to (used by the audit log)
 
     # which model provider to use (set by the app)
     provider: str
@@ -55,6 +56,7 @@ class QAState(TypedDict, total=False):
     tool_log: Annotated[list, operator.add]  # one entry per tool call (tool, args, sources, ms)
     timings: Annotated[list, operator.add]   # one entry per node run ({"node", "ms"})
     output_flags: Annotated[list, operator.add]  # what the output guard redacted / flagged
+    budget_stop: str  # set when the LLM cost/token budget stopped the run (cost.py)
 
     # the final answer shown to the user
     final: str

@@ -1,8 +1,8 @@
 """agents/comms_agent.py — drafts and sends email (real action, gated)."""
 from __future__ import annotations
 from llm import get_model
-from agents._helpers import run_mini_agent
-from guardrails import check_email_args, default_email_to
+from agents._helpers import guard_trail, run_mini_agent
+from guardrails import action_kind, check_email_args, default_email_to, scrub_outbound_args
 
 SYSTEM = ("You are a communications agent. Use the Gmail tools to send the email "
           "the request asks for, using the research/bug report/jira result as the "
@@ -27,9 +27,14 @@ def make_comms_node(tools):
         tool_log: list = []
         out = run_mini_agent(model, tools, SYSTEM, task,
                              guard=check_email_args, blocked=blocked,
-                             tool_log=tool_log, agent="comms")
-        trail = [f"🛡️ tool-level guardrail BLOCKED email call → {b}" for b in blocked]
-        if blocked:
+                             tool_log=tool_log, agent="comms",
+                             scrub=lambda n, a: scrub_outbound_args(n, a, state.get("request", "")))
+        trail = guard_trail(tool_log) + [f"🛡️ tool-level guardrail BLOCKED email call → {b}" for b in blocked
+                                         if not b.startswith("Action budget")]
+        done = sum(1 for e in tool_log if e.get("status") == "ok" and action_kind(e.get("tool", "")))
+        if blocked and done:        # some actions happened, then a guard stopped the rest
+            out = f"(partial: {done} done, then blocked — {blocked[0]})\n{out}"
+        elif blocked:
             out = f"(blocked: {blocked[0]})\n{out}"
         trail.append("✉️ comms agent sent an email")
         return {"email_result": out, "tool_log": tool_log, "trail": trail}

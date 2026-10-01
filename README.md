@@ -136,6 +136,13 @@ Copy `.env.example` to `.env`. **Never commit `.env`** — it's in `.gitignore`.
 | `LANGSMITH_ENDPOINT` | | US endpoint | Only for EU accounts: `https://eu.api.smith.langchain.com` |
 | `MAX_LOOPS` | | `2` | Max retries of one step when the reviewer rejects it |
 | `MAX_STEPS` | | `8` | Max supervisor decisions per request (runaway protection) |
+| `MAX_TICKETS_PER_REQUEST` / `MAX_EMAILS_PER_REQUEST` | | `1` / `1` | Action budget per request |
+| `MAX_ACTIONS_PER_HOUR` | | `10` | Action budget for the whole app, rolling hour |
+| `DOC_ID_PATTERN` | | `\bBUG-\d+\b` | IDs the output guard checks against sources |
+| `AUDIT_LOG_ENABLED` / `AUDIT_LOG_PATH` | | `true` / `logs/audit.jsonl` | The audit log |
+| `MAX_TOKENS_PER_REQUEST` / `MAX_COST_PER_REQUEST_USD` / `MAX_COST_PER_DAY_USD` | | `150000` / `0.25` / `5.00` | LLM budget |
+| `PRICE_<MODEL>` | | — | Override or add a price, `input,output` USD per 1M tokens |
+| `RAG_TOP_K` | | `5` | Passages each document search returns |
 | `MCP_PERSISTENT_SESSIONS` | | `true` | Keep one MCP session per server open (fast). `false` = new session per call (slow) |
 
 `.env.example` is grouped into **required** and **optional** sections with comments.
@@ -231,9 +238,9 @@ research → quality: "needs work → loop back to research — missing severity
 tracks overall progress. Retries per step are capped by `MAX_LOOPS`, and **real actions
 are never auto-retried** (that would create duplicate tickets or emails).
 
-### The supervisor's six deterministic rules
+### The supervisor's eight deterministic rules
 
-The LLM decides the route, but six rules in code sit on top of it:
+The LLM decides the route, but eight rules in code sit on top of it:
 
 | # | Rule | Why |
 |---|---|---|
@@ -243,6 +250,8 @@ The LLM decides the route, but six rules in code sit on top of it:
 | 4 | A research/bug step that just passed isn't re-run back-to-back | No pointless repeats |
 | 5 | Jira/email only when the request **explicitly** asks for one | The LLM can't decide on its own to file a ticket |
 | 6 | The bug agent runs only if a report was asked for, or a ticket will be filed | Saves ~5s of LLM calls |
+| 7 | Research always runs before a real action | A ticket or email is never attempted with nothing to file or send |
+| 8 | A QA question is never ended with "nothing to do" | "Severity vs priority?" is answered, not treated as off-topic |
 
 Every override is visible in the trail, e.g.
 `🧭 supervisor → done (jira was not requested — skipping)`.
@@ -265,6 +274,17 @@ you ─▶ [1 INPUT] ─▶ LLM ─▶ [2 ACTION] ─▶ ⏸ you approve ─▶ 
 | **3. Tool call** | inside the tool loop (`agents/_helpers.py`) | Checks the **real arguments** the LLM chose: every recipient's domain, secrets in the email, tickets outside `JIRA_PROJECT_KEY` |
 | **4. Tool result** | inside the tool loop, right after each read tool returns | **Indirect prompt injection**: lines in docs or tickets that give the AI orders are removed **before the AI reads them** |
 | **5. Output** | `output_guard` node, after `finalize` | Redacts secrets, phone numbers and email addresses outside the allowed domains; flags ticket keys and "email sent" / "ticket created" claims that no tool actually backs up |
+
+### Hardening on top of the five layers
+
+| Guard | What it adds | Example it stops |
+|---|---|---|
+| **Hidden-text normalization** | Layers 1 and 4 scan a normalized copy: invisible characters removed, look-alike letters mapped, spaced / full-width letters joined | `Іgnоre all previous instructions` written with Cyrillic І and о — looks identical, used to pass layer 1 |
+| **Outbound scrub** | Before an email or ticket is **sent**, its text is redacted (phones, outside emails, secrets); recipients and keys untouched | A vendor's phone number from a doc being emailed out in a bug summary |
+| **Grounded IDs** | Every `BUG-123`-style ID in the answer must appear in a tool result (`DOC_ID_PATTERN`) | "BUG-999 is blocking checkout" — invented, now marked *⚠️ not in any source* |
+| **Action budget** | At most `MAX_TICKETS_PER_REQUEST` (1) tickets, `MAX_EMAILS_PER_REQUEST` (1) emails, `MAX_ACTIONS_PER_HOUR` (10) real actions | "Create a ticket for each of the 3 bugs" — 1 created, 2 blocked with the reason |
+| **Scope guard** | Off-topic requests get a clear "here's what I can do" reply instead of an empty answer | "Book me a flight to Goa" |
+| **Audit log** | Every request, approval, real action and guard decision appended to `logs/audit.jsonl` (git-ignored), viewable in the sidebar | Answers "who approved that ticket, and what did the guards block today?" |
 
 Plus the **human approval gate** on every real action. Layers 4–5 are logged: the answer
 shows a **🛡️ N guardrail flags** chip, and **🔎 Details** lists exactly what was removed or
@@ -289,6 +309,46 @@ Action status
 ```
 
 ---
+
+### Measuring the guardrails: the red-team set
+
+`redteam/` holds a fixed attack set — direct, disguised and indirect injection,
+exfiltration, secret leaks, wrong project, false claims, invented IDs — plus **safe**
+requests and doc lines that must *not* be blocked, so false positives are measured too.
+
+```bash
+python -m redteam.run_redteam            # offline: every guard, ~1 s, free
+python -m redteam.run_redteam --live     # live: real LLM + real graph, FAKE Jira/Gmail
+```
+
+Offline today: **29/29 attacks blocked · 0/16 false positives · 5 known gaps**. The gaps are
+kept in the set on purpose — other languages, paraphrases, role-play jailbreaks and
+base64 payloads get past pattern-based guards, and a doc *about* an AI product can look like
+an order to the AI. The report says so instead of claiming 100%, and if a change closes a
+gap the test suite tells you to update the case.
+
+Live mode runs 10 prompts through the real supervisor, agents and LLM. Jira and Gmail are
+replaced by **recording fakes** — nothing is created or sent; the harness checks what
+*would* have gone out (no email to the planted address, no secret in any payload, no
+ticket outside `TEST`…), auto-approving because the tools are fake. Case **L10** is a normal
+full-chain request: it checks the guards don't stop legitimate work. Reports:
+`results/redteam_report.md` and CSVs.
+
+### LLM cost & token budget (infrastructure)
+
+Every LLM call — including structured-output calls inside the supervisor and reviewer — is
+counted by a callback on the run (`cost.py`); no agent code knows about it.
+
+| Limit | Default | When hit |
+|---|---|---|
+| `MAX_TOKENS_PER_REQUEST` | 150,000 | The supervisor stops routing new work; the answer ends *💰 Stopped early: …* |
+| `MAX_COST_PER_REQUEST_USD` | $0.25 | Same |
+| `MAX_COST_PER_DAY_USD` | $5.00 | New requests stop before any work. Persisted in `logs/usage.json`, so a restart doesn't reset it |
+
+Each answer shows a **💰 tokens · $cost** chip; the ⏱ Timing tab breaks usage down by model;
+the sidebar shows today's spend. Prices are list prices set in `cost.py` — check your
+provider's pricing and override with e.g. `PRICE_GPT_4O_MINI=0.15,0.60`. A model with no
+known price is counted in tokens and shown as "price unknown".
 
 ## 7. Observability: what the UI shows you
 
@@ -334,7 +394,7 @@ the time goes. Already applied:
 ## 8. Testing
 
 ```bash
-python -m pytest tests -q        # 87 tests, ~15s, no API keys, no network
+python -m pytest tests -q        # 215 tests, ~20s, no API keys, no network
 ```
 
 | File | Covers |
@@ -342,6 +402,9 @@ python -m pytest tests -q        # 87 tests, ~15s, no API keys, no network
 | `tests/test_graph_offline.py` | Routing (full chain, early "done", cancel, no repeats, unrequested actions), the quality loop and its limits, step cap, all guardrails, no-tools fallback, send-only Gmail |
 | `tests/test_observability_offline.py` | Source extraction and citation filtering, timing, LangSmith URLs, tool logging, **persistent MCP sessions against a real local MCP server** (`tests/fixtures/pid_server.py`) |
 | `tests/test_output_guardrails_offline.py` | Layers 4–5: injection detection (and **no false positives** on the real docs), the LLM never seeing the planted line, redaction, claim verification, a hallucinated action caught end-to-end |
+| `tests/test_guardrails_batch1_offline.py` | Hardening: 5 disguise tricks now blocked (and real Cyrillic text still allowed), outbound scrub, grounded IDs, action budget, scope reply, audit log (incl. "logging never breaks the app") |
+| `tests/test_redteam_offline.py` | Every red-team case by name; known gaps stay gaps; the live harness (recording fakes, auto-approve) with scripted models |
+| `tests/test_cost_budget_offline.py` | Prices and overrides, token counting **inside the graph**, the three limits, daily spend surviving a restart, the stop message |
 | `tests/test_retriever_offline.py` | The RAG index never duplicates chunks and re-indexes edited docs |
 | `tests/test_app_smoke.py` | Runs the real `app.py` in Streamlit's test harness: renders, streams a request, approve, cancel, example buttons, trace link |
 
@@ -364,10 +427,13 @@ langgraph-testing-mastery/
 ├── quality.py              the reviewer node (drives the cycle)
 ├── guardrails.py           all five guardrail layers
 ├── observability.py        sources, timing summary, LangSmith links
+├── audit.py                the audit log (logs/audit.jsonl)
+├── cost.py                 LLM token & cost budget
+├── redteam/                attack set + runner: python -m redteam.run_redteam [--live]
 ├── llm.py                  provider-swappable model (OpenAI / Claude)
 ├── async_bridge.py         one background event loop for async MCP tools
 ├── agents/
-│   ├── supervisor.py       the router + six deterministic rules
+│   ├── supervisor.py       the router + eight deterministic rules
 │   ├── research_agent.py   RAG + Jira read
 │   ├── bug_agent.py        bug-report formatting
 │   ├── jira_agent.py       create/update tickets (gated)
@@ -379,7 +445,7 @@ langgraph-testing-mastery/
 ├── rag/retriever.py        load → split → embed → Chroma (idempotent index)
 ├── sample_docs/            the QA knowledge base (+ release_notes.md: the injection demo)
 ├── config/mcp_servers.json MCP server definitions
-├── tests/                  87 offline tests
+├── tests/                  215 offline tests
 ├── SETUP.md                step-by-step setup & user guide (start here)
 ├── QUESTIONS.md            question bank + demo flow
 ├── requirements.txt
@@ -445,6 +511,19 @@ test. They make good teaching moments.
 | 10 | Research trusted an empty Jira search | "No open bugs" while the docs listed some | Research always searches the docs first |
 | 11 | A new MCP session per tool call | Every Jira/Gmail call took seconds | Persistent sessions on a shared event loop |
 | 12 | Comms received all 16 Gmail tools | It could have trashed messages | Send-only tool subset (least privilege) |
+| 13 | No guard on tool results or the final answer | Planted instructions reached the AI | Layers 4 (tool result) and 5 (output) |
+| 14 | Disguised text slipped past the regex | `Іgnоre…` with Cyrillic letters passed layer 1 | Hidden-text normalization |
+| 15 | The supervisor tried Jira before research | "Nothing to file" — ticket never created | Rule 7: research first |
+| 16 | An address in the email **body** blocked the whole email | The outbound scrub never ran | Domain check on recipients only; body addresses are redacted |
+| 17 | "in project PROD" was silently filed in TEST | You got a different project than you asked for | Layer 2 blocks with "you asked for PROD, only TEST is allowed" |
+| 18 | An old ticket's key was reported as the new ticket | Search returned TEST-57, the agent created TEST-58, the answer said "created TEST-57" | A key claimed as *created* must come from the create tool's own result |
+| 19 | 1 ticket created + 2 budget-blocked showed as "Jira: blocked" | The status hid a real success | "⚠️ Jira: 1 done, then blocked — …" |
+| 20 | The tool-result guard removed normal doc lines | "The user agent string must be logged" and "bot detection should…" were treated as orders to an AI — found by the red-team set | Patterns now target text *addressed to* an AI |
+| 21 | Leetspeak slipped past layer 1 | `1gn0re all prev10us instructi0ns` | Number-for-letter swaps are normalized before scanning |
+| 22 | "Severity vs priority?" got the off-topic reply | The supervisor ended a QA question with nothing done | Rule 8: QA questions always reach research |
+| 23 | Searches returned too few passages | "export" filled the top 3 with release notes; BUG-112 and the vendor doc were never seen | `RAG_TOP_K` default 3 → 5 |
+| 24 | "$0.0458 of $5.00" showed as "0.0458 of 5.00" | Streamlit read the text between two `$` as a maths formula | `$` escaped |
+| 25 | The summary named an old ticket as the new one | Search returned TEST-59, the tool created TEST-60 | The created key is passed to the summary as a verified fact (and the output guard still checks) |
 
 ---
 

@@ -129,3 +129,52 @@ def test_guardrail_flags_show_in_the_ui(fake_app, monkeypatch):
     body = _text(at)
     assert "🛡️ 1 guardrail flag" in body
     assert "Tool-result guard" in body and "search_docs" in body
+
+
+def test_scope_reply_and_audit_log_in_the_ui(fake_app):
+    fake_app["script"][:] = ["done"]
+    at = streamlit_testing.AppTest.from_file(APP, default_timeout=30).run()
+    next(bt for bt in at.button if "Off-topic" in bt.label).click().run()
+    assert not at.exception
+    body = _text(at)
+    assert "outside what this QA assistant does" in body
+    assert "request" in body            # the audit log viewer shows the request event
+
+
+def test_dollar_signs_are_escaped(fake_app):
+    """Live finding: '$0.0458 of $5.00' rendered as '0.0458 of 5.00' — two $ signs make
+    Streamlit treat the text between them as a maths formula."""
+    at = streamlit_testing.AppTest.from_file(APP, default_timeout=30).run()
+    today = next(str(m.value) for m in at.markdown if "Today:" in str(m.value))
+    assert today.startswith("💰 Today: \\$") and " of \\$" in today
+
+
+def test_cost_chip_has_no_stray_backslash(fake_app, monkeypatch):
+    """Live finding: the chip showed '\\$0.0005' — inside HTML the markdown escape isn't removed."""
+    import cost
+    real_start = cost.start_request
+    def start_with_usage(tid):
+        t = real_start(tid)
+        t.add("gpt-4o-mini", 1000, 200)
+        return t
+    monkeypatch.setattr(cost, "start_request", start_with_usage)
+    fake_app["script"][:] = ["research", "done"]
+    at = streamlit_testing.AppTest.from_file(APP, default_timeout=30).run()
+    at.chat_input[0].set_value("What known bugs affect the login page?").run()
+    chips = next(str(m.value) for m in at.markdown if "tokens" in str(m.value) and "chip" in str(m.value))
+    assert "&#36;0.0003" in chips and "\\$" not in chips
+
+
+def test_unpriced_model_chip_says_price_unknown(fake_app, monkeypatch):
+    import cost
+    real_start = cost.start_request
+    def start_with_usage(tid):
+        t = real_start(tid)
+        t.add("claude-sonnet-5", 1000, 200)          # no price configured
+        return t
+    monkeypatch.setattr(cost, "start_request", start_with_usage)
+    fake_app["script"][:] = ["research", "done"]
+    at = streamlit_testing.AppTest.from_file(APP, default_timeout=30).run()
+    at.chat_input[0].set_value("What known bugs affect the login page?").run()
+    chips = next(str(m.value) for m in at.markdown if "tokens" in str(m.value) and "chip" in str(m.value))
+    assert "price unknown" in chips

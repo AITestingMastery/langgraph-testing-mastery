@@ -178,7 +178,8 @@ def test_output_guard_leaves_action_status_untouched():
 
 
 def test_clean_answer_passes_unchanged():
-    out = gr.output_guard_node({"request": "x", "final": "BUG-101 is open.", "tool_log": []})
+    src = [{"tool": "search_docs", "status": "ok", "sources": [], "ids": ["BUG-101"]}]
+    out = gr.output_guard_node({"request": "x", "final": "BUG-101 is open.", "tool_log": src})
     assert out["final"] == "BUG-101 is open." and "output_flags" not in out
     assert out["trail"] == ["🛡️ output guard: answer passed"]
 

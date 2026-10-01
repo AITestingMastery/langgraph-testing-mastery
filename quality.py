@@ -31,6 +31,9 @@ ACTION_STEPS = {"jira", "comms"}
 SYSTEM = """You are a QA reviewer. Judge ONLY the output of the step that just ran —
 not whether the whole request is finished (other steps may still follow).
 Approve if this step's output is accurate and useful for its part of the request.
+If the step clearly reports that something does NOT exist in the sources (e.g. "BUG-999
+is not in our docs or Jira"), that is a correct answer — APPROVE it; never ask for details
+that cannot exist.
 If it's weak, say specifically what's missing."""
 
 

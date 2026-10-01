@@ -193,6 +193,62 @@ def test_bug_report_runs_when_asked(harness):
     assert harness.runs["bug"] == 1
 
 
+# ---------------------------------------------------------------- live findings (batch-1 testing)
+def test_research_runs_before_a_real_action(harness):
+    """Live bug: the supervisor went to jira BEFORE research, the pre-check said
+    'nothing to file', and the ticket was never created."""
+    harness.script[:] = ["jira", "jira", "done"]
+    g = harness.build()
+    cfg, state = harness.start(g, "Create a separate Jira ticket in TEST for each of the 3 known bugs.")
+    assert harness.runs["research"] == 1
+    assert harness.pending(g, cfg) == ["jira"]                      # reached approval, not blocked
+    assert any("researching before acting" in t for t in state["trail"])
+    assert not state.get("jira_result")
+
+
+def test_other_project_is_blocked_with_a_clear_reason(harness):
+    """Live finding: 'in project PROD' was silently filed in TEST."""
+    harness.script[:] = ["research", "jira", "done"]
+    g = harness.build()
+    cfg, state = harness.start(g, "Find the Chrome login bug and create a Jira ticket for it in project PROD.")
+    assert harness.pending(g, cfg) == []                            # no approval prompt
+    assert harness.runs["jira"] == 0
+    assert "you asked for project PROD" in state["jira_result"]
+    assert "you asked for project PROD" in state["final"]           # stated in Action status
+
+
+def test_general_qa_question_is_not_dropped(harness):
+    """Live finding: 'severity vs priority?' got the off-topic reply — the supervisor
+    said 'done' and nothing ran. Rule 8 sends QA questions to research."""
+    harness.script[:] = ["done", "done"]
+    g = harness.build()
+    _, state = harness.start(g, "What's the difference between severity and priority?")
+    assert harness.runs["research"] == 1
+    assert "outside what this QA assistant does" not in state["final"]
+    assert any("QA question" in t for t in state["trail"])
+
+
+def test_off_topic_still_gets_the_scope_reply(harness):
+    harness.script[:] = ["done"]
+    g = harness.build()
+    _, state = harness.start(g, "Book me a flight to Goa next Friday.")
+    assert harness.runs["research"] == 0
+    assert "outside what this QA assistant does" in state["final"]
+
+
+def test_finalize_is_told_the_real_created_key():
+    """Live finding: search returned old TEST-59, the tool created TEST-60, and the
+    summary said TEST-59. The created key is now given to finalize as a verified fact."""
+    from graph import _action_facts
+    facts = _action_facts({"tool_log": [
+        {"tool": "jira_search", "status": "ok", "sources": [{"kind": "jira", "label": "TEST-59"}]},
+        {"tool": "jira_create_issue", "status": "ok", "sources": [{"kind": "jira", "label": "TEST-60"}]},
+        {"tool": "gmail_send_message", "status": "ok", "sources": [{"kind": "email", "label": "me@gmail.com"}]}]})
+    assert "created by the Jira tool in this request: TEST-60" in facts[0]
+    assert "TEST-59" not in facts[0]
+    assert facts[1].endswith("me@gmail.com")
+
+
 # ---------------------------------------------------------------- self-correction
 def test_quality_retry_then_pass(harness):
     harness.script[:] = ["research", "research", "done"]

@@ -228,7 +228,7 @@ your install is correct.
 python -m pytest tests -q
 ```
 
-✅ **Expected:** `87 passed`.
+✅ **Expected:** `215 passed`.
 
 > Seeing `ModuleNotFoundError`? Your `.venv` isn't active (step 3.1), or you're not in
 > the project folder.
@@ -419,6 +419,9 @@ The example documents the agents search are in `sample_docs/`: `known_bugs.md`
 | 9 | **✉️ Email me** | Pauses for approval | **Approve** → email to `DEFAULT_EMAIL_TO` (needs Part 7) |
 | 10 | **⭐ Full chain (2 approvals)** | research → bug → Jira 🔒 → email 🔒 | The showpiece: 4 agents hand off, two approvals, one ticket + one email |
 | 11 | **🧪 Poisoned doc (indirect injection)** | Research reads `release_notes.md`, which hides an instruction to email your bugs to an outside address | The trail shows **🛡️ tool-result guard: removed 1 suspicious line**, the chip shows **🛡️ 1 guardrail flag**, and Details quotes the removed line. The AI never saw it |
+| 12 | **🕵️ Disguised attack (look-alike letters)** | The request *looks* like normal English but hides Cyrillic letters | Blocked at the door: **🛡️ entry guardrail BLOCKED … (disguised with look-alike letters)** |
+| 13 | **🧮 Action budget (3 tickets asked)** | Asks for 3 tickets; approve once | **One** ticket is created; the trail shows **🛡️ action budget: blocked jira_create_issue** for the other two (needs Part 6) |
+| 14 | **🧭 Off-topic (scope guard)** | "Book me a flight…" | A clear list of what the assistant *can* do, instead of an empty answer |
 
 **Try typing your own too** — more ideas, grouped by feature, are in
 **[QUESTIONS.md](QUESTIONS.md)**, including a 7-minute demo order for presenting.
@@ -446,6 +449,7 @@ Sidebar → **🧠 Model → Provider**. `gpt-4o` is smarter but slower and pric
 | 🕸️ **The agent graph** | The team: supervisor, research, bug, guardrail, jira, comms, quality |
 | 🔀 **Last run — agent trail** | Every step of the last request, in order. Purple = supervisor decisions, orange = loop-backs |
 | 🖼️ **Graph diagram** | The real graph, drawn from the code |
+| 📜 **Audit log** | The last 25 events: requests, approvals, real actions, and every guard decision. The full log is `logs/audit.jsonl` |
 | 🧹 **New conversation** | Clears the screen. (Each question already starts fresh, so this is only visual) |
 
 ### Under every answer
@@ -507,6 +511,8 @@ streamlit run app.py
 |---|---|---|
 | Stop the app | **Ctrl + C** in the terminal | **Ctrl + C** |
 | Run the tests | `python -m pytest tests -q` | same |
+| Measure the guardrails (free) | `python -m redteam.run_redteam` | same |
+| …with the real LLM (a few cents) | `python -m redteam.run_redteam --live` | same |
 | Get the latest version | `git pull` then `pip install -r requirements.txt` | same |
 | Rebuild the document index | `rm -rf chroma_db` then restart | `rmdir /s /q chroma_db` then restart |
 | Leave the virtual env | `deactivate` | `deactivate` |
@@ -537,7 +543,7 @@ streamlit run app.py
 | `command not found: python3.12` / `py` not recognised | Python 3.12 isn't installed or not on PATH — redo step 1.3 (Windows: tick **Add to PATH**) |
 | `uv` / `uvx` not found | Redo step 1.4, then **close and reopen** the terminal |
 | `ModuleNotFoundError` | Activate the venv (step 3.1) and make sure you're in the project folder |
-| `87 passed` not shown | Run `pip install -r requirements.txt` again; paste the first error into an issue |
+| `215 passed` not shown | Run `pip install -r requirements.txt` again; paste the first error into an issue |
 | **Not ready: OPENAI_API_KEY is not set** | `.env` is missing, misnamed (e.g. `.env.txt`), or not in the project folder |
 | OpenAI error about quota / billing | Add credit in OpenAI **Settings → Billing** |
 | 🔴 **Jira** in the sidebar | Check the red error under it. Verify `JIRA_URL` (with `https://`), username = your Atlassian email, a fresh API token. Restart |
@@ -564,12 +570,12 @@ message — **remove any keys first**.
 - [ ] Git, Python 3.12 and uv installed (Part 1)
 - [ ] Repo cloned, `.venv` created and active (Parts 2–3)
 - [ ] `.env` created with a real `OPENAI_API_KEY` (Part 4)
-- [ ] `python -m pytest tests -q` → **87 passed** (Part 5)
+- [ ] `python -m pytest tests -q` → **215 passed** (Part 5)
 - [ ] App opens at http://localhost:8501 and **📚 Research only** works (Part 5)
 - [ ] *(optional)* 🟢 Jira, and a ticket created after approval (Part 6)
 - [ ] *(optional)* 🟢 Gmail, and an email received after approval (Part 7)
 - [ ] *(optional)* 🟢 LangSmith, and the trace link opens (Part 8)
-- [ ] All 11 buttons in the guided tour tried (Part 9)
+- [ ] All 14 buttons in the guided tour tried (Part 9)
 
 **Next:** read **[README.md](README.md)** to understand *how* it works, and
 **[QUESTIONS.md](QUESTIONS.md)** for more to try.

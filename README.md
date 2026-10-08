@@ -178,6 +178,79 @@ the tool count, and any startup error. Expand **Loaded tool names** to see every
 
 ## 5. How it works
 
+### Architecture: every layer at a glance
+
+One request travels **down the middle**, layer by layer. On the left, protections that are
+**always on**; on the right, what is checked **before a release** — and how weak live answers
+flow back into it.
+
+```mermaid
+flowchart LR
+    subgraph REL["🧪 BEFORE A RELEASE"]
+        direction TB
+        RT["🎯 Red team<br/>29/29 attacks blocked<br/>0/17 false alarms"]
+        OE["📊 Offline evaluation<br/>14 golden cases<br/>DeepEval quality gate"]
+        TS["✅ 288 offline tests"]
+    end
+
+    subgraph STACK["🕸️ ONE REQUEST, LAYER BY LAYER"]
+        direction TB
+        U(["🧑‍💻 You — Streamlit UI"])
+        subgraph L1["1 · INPUT"]
+            direction LR
+            IG["① Input guard<br/>injection · disguised text"] -->|attack| X(["🛡️ refused"])
+        end
+        subgraph L2["2 · ORCHESTRATION — LangGraph"]
+            direction LR
+            SUP["② Supervisor<br/>+ 8 code rules"] --> SPEC["📚 research · 🐞 bug"] --> QA["✅ Reviewer<br/>loops weak work back"]
+        end
+        subgraph L3["3 · REAL ACTIONS"]
+            direction LR
+            AG["③ Action guard<br/>domain · project"] --> AP{{"④ YOU approve"}} --> ACT["🗂️ jira · ✉️ comms"]
+        end
+        subgraph L4["4 · TOOLS — every call"]
+            direction LR
+            TC["⑤ Tool-call guard<br/>args · budget · scrub"] --> EXT[("Docs RAG<br/>Jira MCP<br/>Gmail MCP")] --> TR["⑥ Tool-result guard<br/>hidden orders removed"]
+        end
+        subgraph L5["5 · OUTPUT"]
+            direction LR
+            FIN["Finalize<br/>verified facts"] --> OG["⑦ Output guard<br/>redact · verify claims"]
+        end
+        ANS(["💬 Answer"])
+        subgraph L6["6 · QUALITY — every answer"]
+            direction LR
+            LE["📊 Real-time evaluation<br/>7 parameters + 4 DeepEval judges"] --> LS[("LangSmith<br/>traces + scores")]
+        end
+        U --> L1 --> L2 --> L3 --> L4 --> L5 --> ANS --> L6
+    end
+
+    subgraph ON["⚙️ ALWAYS ON"]
+        direction TB
+        LP["🔑 Least privilege"]
+        LIM["⏱ Hard limits"]
+        COST["💰 Cost budget"]
+        AUD["📜 Audit log"]
+    end
+
+    REL -.->|"attacks · grades"| STACK
+    STACK -.->|"👎 → golden set"| REL
+    ON -.->|"every layer"| STACK
+```
+
+| Layer | What happens | Code |
+|---|---|---|
+| 1 · Input | ① injection detection on a normalized copy of the request | `guardrails.py` |
+| 2 · Orchestration | ② the supervisor routes; 8 code rules override it; the reviewer loops weak work back | `agents/supervisor.py`, `quality.py` |
+| 3 · Real actions | ③ domain/project checked before asking; ④ you approve or cancel | `guardrails.py`, `graph.py` |
+| 4 · Tools | ⑤ the real arguments, action budget and outbound scrub; ⑥ hidden instructions removed from results | `agents/_helpers.py` |
+| 5 · Output | verified facts; ⑦ redaction and claim checks | `graph.py`, `guardrails.py` |
+| 6 · Quality | every answer scored in real time, scores sent to LangSmith | `evals/live.py` |
+| Always on | least privilege · hard limits · cost budget · audit log | `graph.py`, `cost.py`, `audit.py` |
+| Before a release | red team · offline evaluation with a DeepEval gate · offline tests | `redteam/`, `evals/`, `tests/` |
+
+The five safety layers in §6 are checkpoints ①, ③, ⑤, ⑥ and ⑦; ② is the supervisor's rules
+and ④ is your approval. The graph below shows how the agents are wired.
+
 ### The graph
 
 ```mermaid

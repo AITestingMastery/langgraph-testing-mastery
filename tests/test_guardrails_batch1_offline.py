@@ -328,3 +328,11 @@ def test_jira_node_marks_partial_success(monkeypatch):
     node = j.make_jira_node([types.SimpleNamespace(name="jira_create_issue")])
     out = node({"request": "x", "research": "facts"})
     assert out["jira_result"].startswith("(partial: 1 done, then blocked")
+
+
+
+def test_mask_allowed_contacts(monkeypatch):
+    monkeypatch.setenv("ALLOWED_EMAIL_DOMAINS", "gmail.com")
+    monkeypatch.setenv("DEFAULT_EMAIL_TO", "me@corp.io")
+    out = gr.mask_allowed_contacts("to a@gmail.com, me@corp.io and x@evil.io")
+    assert out == "to [allowed recipient], [allowed recipient] and x@evil.io"

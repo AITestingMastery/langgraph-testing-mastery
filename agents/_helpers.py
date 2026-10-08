@@ -113,7 +113,8 @@ def run_mini_agent(model, tools: list, system: str, task: str, max_steps: int = 
                     try:
                         result = _invoke_tool(tool, args)
                     except Exception as exc:  # noqa: BLE001 — report tool errors to the model
-                        log.exception("tool %s failed", name)
+                        # one line: tool errors are often expected ("issue does not exist")
+                        log.warning("tool %s failed: %s", name, exc)
                         status, result = "error", f"TOOL ERROR ({name}): {exc}"
             if action_kind(name) and tool is not None and status != "blocked":
                 if status == "ok":
@@ -137,6 +138,9 @@ def run_mini_agent(model, tools: list, system: str, task: str, max_steps: int = 
                     "scrubbed": scrubbed,
                     "budget": budget_msg,
                     "ids": ids,
+                    # the exact (guard-cleaned) text the model read — used by the live
+                    # evaluator's Faithfulness check. Only for read tools; same cap the model sees.
+                    "context": result[:4000] if status == "ok" and is_read_tool(name) else "",
             })
             messages.append({"role": "tool", "tool_call_id": c["id"], "content": result[:4000]})
     final = bound.invoke(messages + [("human", "Give your final answer now.")])

@@ -1,0 +1,3 @@
+# Evaluation layer (optional): python -m evals.run_evals
+# Install on top of requirements.txt:  pip install -r requirements-eval.txt
+deepeval>=4.2,<5

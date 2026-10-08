@@ -268,6 +268,21 @@ _TICKET_CLAIM = re.compile(r"\b(created|filed|opened|raised|logged)\b[^.\n]{0,50
                            r"|\b(ticket|issue)\b[^.\n]{0,50}\b(created|filed|opened|raised)\b", re.I)
 
 
+def mask_allowed_contacts(text: str) -> str:
+    """For an LLM judge: hide addresses your POLICY allows (allowed domains, the default
+    recipient), so a confirmation like "email sent to you@gmail.com" isn't scored as a
+    personal-data leak. Addresses outside the policy stay visible to the judge."""
+    allowed = set(allowed_email_domains())
+    default = default_email_to().lower()
+
+    def _mask(m):
+        addr = m.group(0)
+        if addr.lower() == default or addr.rsplit("@", 1)[-1].lower() in allowed:
+            return "[allowed recipient]"
+        return addr
+    return EMAIL_RE.sub(_mask, text or "")
+
+
 def output_guard_enabled() -> bool:
     return os.getenv("OUTPUT_GUARD", "true").lower() != "false"
 

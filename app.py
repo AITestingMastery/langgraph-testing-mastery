@@ -34,6 +34,8 @@ from observability import (langsmith_enabled, langsmith_project, project_url,  #
 from tools.native_tools import NATIVE_TOOLS  # noqa: E402
 from audit import audit, read_recent  # noqa: E402
 import cost  # noqa: E402
+from evals import live as live_eval  # noqa: E402  — real-time evaluation (works without DeepEval)
+from evals.harness import route_from_timings  # noqa: E402
 
 RECURSION_LIMIT = 40  # hard ceiling on node executions per run (backstop to MAX_STEPS)
 GATED = ("jira", "comms")
@@ -180,11 +182,82 @@ def build_details(state: dict) -> dict:
     d["run_ids"] = list(st.session_state.turn.get("run_ids", []))
     t = cost.tracker_for(state.get("thread_id") or st.session_state.thread_id)
     d["usage"] = t.usage.as_dict() if t else None
+    d["request"] = state.get("request", "")
+    d["route"] = route_from_timings(state.get("timings", []))
+    d["thread_id"] = state.get("thread_id") or st.session_state.thread_id
     return d
 
 
 def _chip(text: str, warn: bool = False) -> str:
     return f"<span class='chip{' warn' if warn else ''}'>{text}</span>"
+
+
+def _unique_flags(d: dict) -> dict:
+    """The same planted line found by two searches is one finding, not two."""
+    seen: dict = {}
+    for e in d.get("flagged_tools", []):
+        for line in e["flags"]:
+            seen[(e["tool"], line)] = seen.get((e["tool"], line), 0) + 1
+    return seen
+
+
+def render_live_eval(d: dict):
+    """The 📊 Evaluation tab: real-time scores for this request."""
+    ev = d.get("live_eval")
+    if d.get("eval_pending") and not ev:
+        st.info("📊 The live evaluation is still running — scores appear here in a few seconds.")
+        return
+    if not ev:
+        st.caption(f"Not evaluated (LIVE_EVAL={live_eval.mode()}, sample "
+                   f"{live_eval.sample_rate():.0%}).")
+        return
+    if ev.get("error"):
+        st.error(f"Evaluation failed: {ev['error']}")
+        return
+    icon = {"good": "🟢", "review": "🟡", "poor": "🔴"}.get(ev["verdict"], "📊")
+    st.markdown(f"**Overall {ev['overall']:.2f} · {icon} {ev['verdict']}** — scored in "
+                f"{ev['eval_seconds']}s · judge cost &#36;{ev['judge_cost_usd']:.4f}", unsafe_allow_html=True)
+    for kind, title, note in (("parameter", "Parameters — pure code, free, instant", ""),
+                              ("judge", "LLM as a judge — DeepEval", ev.get("judge_note", ""))):
+        rows = [r for r in ev["scores"] if r["kind"] == kind]
+        st.markdown(f"**{title}**")
+        if rows:
+            st.dataframe([{"": "✅" if r["passed"] else ("⚠️" if r["score"] is not None else "❌"),
+                           "metric": r["metric"],
+                           "score": "—" if r["score"] is None else round(r["score"], 2),
+                           "why": r["reason"]} for r in rows], hide_index=True, width="stretch")
+        if note:
+            st.caption(note)
+    st.caption(f"Reference-free: live requests have no 'right answer' to compare with. Alert line "
+               f"{live_eval.threshold():.2f}. Saved to logs/live_evals.jsonl"
+               + (" and attached to the LangSmith trace." if langsmith_enabled() else "."))
+
+
+@st.fragment(run_every="2s")
+def _live_eval_poller(thread_id: str):
+    """While an evaluation runs in the background, check every 2 s; when it's done,
+    re-run the page so the 📊 chip and tab fill in."""
+    state, _ = live_eval.status(thread_id)
+    if state != "pending":
+        st.rerun()
+
+
+def render_feedback(i: int, d: dict):
+    """👍 / 👎 and ➕ golden set — the human side of real-time evaluation."""
+    c1, c2, c3, _ = st.columns([1, 1, 3, 6])
+    run_id = (d.get("run_ids") or [None])[0]
+    answer = d.get("answer", "")
+    if c1.button("👍", key=f"up{i}", help="Good answer"):
+        live_eval.record_feedback(d.get("thread_id", ""), run_id, 1, d.get("request", ""), answer)
+        st.toast("Thanks — recorded 👍")
+    if c2.button("👎", key=f"down{i}", help="Bad answer"):
+        live_eval.record_feedback(d.get("thread_id", ""), run_id, 0, d.get("request", ""), answer)
+        st.toast("Recorded 👎 — consider adding it to the golden set")
+    if c3.button("➕ Add to golden set", key=f"gold{i}",
+                 help="Save this request as a candidate test case for the offline evaluation"):
+        path = live_eval.add_golden_candidate(d.get("request", ""), answer, d.get("route", []),
+                                              d.get("live_eval"))
+        st.toast(f"Saved to {path} — review it, then copy it into evals/golden.py")
 
 
 def render_details(d: dict):
@@ -204,10 +277,16 @@ def render_details(d: dict):
         chips.append(_chip(f"💰 {u['total_tokens'] / 1000:.1f}k tokens{price}"))
     if d["loops"]:
         chips.append(_chip(f"↩️ {d['loops']} loop-back{'s' if d['loops'] != 1 else ''}"))
-    n_flags = (len(d.get("flagged_tools", [])) + len(d.get("output_flags", []))
+    n_flags = (len(_unique_flags(d)) + len(d.get("output_flags", []))
                + len(d.get("scrubbed_tools", [])) + len(d.get("budget_blocks", [])))
     if n_flags:
         chips.append(_chip(f"🛡️ {n_flags} guardrail flag{'s' if n_flags != 1 else ''}", warn=True))
+    ev = d.get("live_eval")
+    if ev and ev.get("overall") is not None:
+        icon = {"good": "🟢", "review": "🟡", "poor": "🔴"}.get(ev["verdict"], "📊")
+        chips.append(_chip(f"📊 {ev['overall']:.2f} · {icon} {ev['verdict']}", warn=ev["verdict"] != "good"))
+    elif d.get("eval_pending"):
+        chips.append(_chip("📊 evaluating…"))
     if langsmith_enabled() and d["run_ids"]:
         url = trace_url(d["run_ids"][0]) or project_url()
         chips.append(_chip(f"🔗 <a href='{url}' target='_blank'>LangSmith trace</a>"))
@@ -218,11 +297,10 @@ def render_details(d: dict):
                 or d.get("budget_blocks")):
             with st.container(border=True):
                 st.markdown("**🛡️ Guardrail flags**")
-                for e in d.get("flagged_tools", []):
-                    st.markdown(f"- **Tool-result guard** removed {len(e['flags'])} line(s) from "
-                                f"`{e['tool']}` before the AI read them:")
-                    for line in e["flags"]:
-                        st.caption(f"“{line}”")
+                for (tool, line), n in _unique_flags(d).items():
+                    st.markdown(f"- **Tool-result guard** removed this line from `{tool}` before the "
+                                f"AI read it" + (f" — in {n} searches" if n > 1 else "") + ":")
+                    st.caption(f"“{line}”")
                 for e in d.get("scrubbed_tools", []):
                     st.markdown(f"- **Outbound guard** in `{e['tool']}`: {'; '.join(e['scrubbed'])} "
                                 "before it was sent")
@@ -230,7 +308,11 @@ def render_details(d: dict):
                     st.markdown(f"- **Action budget** blocked `{e['tool']}`: {e['budget']}")
                 for f in d.get("output_flags", []):
                     st.markdown(f"- **Output guard:** {f}")
-        t_src, t_tools, t_time, t_trace = st.tabs(["📚 Sources", "🔧 Tools", "⏱ Timing", "🔗 Trace"])
+        t_src, t_tools, t_time, t_eval, t_trace = st.tabs(
+            ["📚 Sources", "🔧 Tools", "⏱ Timing", "📊 Evaluation", "🔗 Trace"])
+
+        with t_eval:
+            render_live_eval(d)
 
         with t_src:
             if d["sources"]:
@@ -396,6 +478,19 @@ with st.sidebar:
             "budget** caps tickets and emails · off-topic requests get a clear scope reply · "
             "everything is written to the **📜 Audit log**.")
 
+    with st.expander("📊 Live quality"):
+        roll = live_eval.rolling(20)
+        st.caption(f"Mode **{live_eval.mode()}** · sample {live_eval.sample_rate():.0%} · LLM judge "
+                   + ("on" if live_eval.judge_enabled() and live_eval.deepeval_available() else "off"))
+        if not roll["count"]:
+            st.caption("No evaluations yet — ask something.")
+        else:
+            st.markdown(f"Last **{roll['count']}** requests · overall **{roll['overall']:.2f}**")
+            st.dataframe([{"metric": k, "avg": v, "": "⚠️" if k in roll["alerts"] else "✅"}
+                          for k, v in sorted(roll["metrics"].items())], hide_index=True, width="stretch")
+            for a in roll["alerts"]:
+                st.warning(f"{a} is below {live_eval.threshold():.2f} on recent requests")
+
     with st.expander("📜 Audit log"):
         events = read_recent(25)
         if not events:
@@ -405,8 +500,13 @@ with st.sidebar:
             st.caption("Newest first · full log: `logs/audit.jsonl`")
             icon = {"request": "🧑‍💻", "approval": "✋", "action": "⚙️", "guard_block": "🛡️",
                     "budget_block": "🧮", "tool_result_cleaned": "🧪", "outbound_redacted": "✂️",
-                    "output_guard": "🔎", "cost": "💰", "cost_block": "💸"}
+                    "output_guard": "🔎", "cost": "💰", "cost_block": "💸", "live_eval": "📊",
+                    "user_feedback": "👍"}
             for ev in events:
+                if ev["event"] == "live_eval":
+                    ev = {**ev, "reason": f"overall {ev.get('overall')} · {ev.get('verdict')}"}
+                if ev["event"] == "user_feedback":
+                    ev = {**ev, "reason": "👍" if ev.get("rating") else "👎"}
                 if ev["event"] == "cost":
                     ev = {**ev, "reason": f"{ev.get('tokens', 0):,} tokens · &#36;{ev.get('cost_usd', 0):.4f}"}   # HTML context
                 detail = (ev.get("reason") or ev.get("decision") or ev.get("tool") or
@@ -456,11 +556,19 @@ if err:
     st.stop()
 
 # render history
-for msg in st.session_state.history:
+for i, msg in enumerate(st.session_state.history):
     with st.chat_message(msg["role"], avatar="🧑‍💻" if msg["role"] == "user" else "🕸️"):
         st.markdown(msg["content"])
-        if msg.get("details"):
-            render_details(msg["details"])
+        d = msg.get("details")
+        if d:
+            if d.get("eval_pending"):                      # background evaluation finished?
+                state_, result_ = live_eval.status(d["thread_id"])
+                if state_ in ("done", "error"):
+                    d["live_eval"], d["eval_pending"] = result_, False
+            render_details(d)
+            render_feedback(i, d)
+            if d.get("eval_pending"):
+                _live_eval_poller(d["thread_id"])
 
 
 def finish_turn(state):
@@ -471,8 +579,22 @@ def finish_turn(state):
         audit("cost", thread=st.session_state.thread_id, tokens=t.usage.total_tokens,
               cost_usd=round(t.usage.cost_usd, 6), calls=t.usage.calls)
     answer = state.get("final") or "(the graph finished without a final message)"
-    st.session_state.history.append({"role": "assistant", "content": answer,
-                                     "details": build_details(state)})
+    details = build_details(state)
+    details["answer"] = answer
+    # ---- real-time evaluation (evals/live.py)
+    if live_eval.should_evaluate():
+        rec = live_eval.build_record(state, details["thread_id"], details["run_ids"], details.get("usage"))
+        if live_eval.mode() in ("gate", "sync"):
+            with st.spinner("📊 Evaluating the answer before showing it…"):
+                result = live_eval.run_now(rec)
+            details["live_eval"] = result
+            warning = live_eval.gate_warning(result) if live_eval.mode() == "gate" else None
+            if warning:
+                answer = f"{answer}\n\n---\n{warning}"
+        else:
+            live_eval.submit(rec)
+            details["eval_pending"] = True
+    st.session_state.history.append({"role": "assistant", "content": answer, "details": details})
 
 
 # ---------------------------------------------------------------- pending approval

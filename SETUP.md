@@ -228,7 +228,8 @@ your install is correct.
 python -m pytest tests -q
 ```
 
-✅ **Expected:** `215 passed`.
+✅ **Expected:** `256 passed, 3 skipped` — or `288 passed` if you also installed the optional
+evaluation layer (`pip install -r requirements-eval.txt`).
 
 > Seeing `ModuleNotFoundError`? Your `.venv` isn't active (step 3.1), or you're not in
 > the project folder.
@@ -513,6 +514,11 @@ streamlit run app.py
 | Run the tests | `python -m pytest tests -q` | same |
 | Measure the guardrails (free) | `python -m redteam.run_redteam` | same |
 | …with the real LLM (a few cents) | `python -m redteam.run_redteam --live` | same |
+| Install the evaluation layer (optional) | `pip install -r requirements-eval.txt` | same |
+| Evaluate quality — run + score (≈ cents) | `python -m evals.run_evals --live` | same |
+| Re-score recorded runs (free) | `python -m evals.run_evals` | same |
+| Real-time evaluation: answer first, scores after (default) | `LIVE_EVAL=background` in `.env` | same |
+| …or score first and warn on weak answers | `LIVE_EVAL=gate` in `.env` | same |
 | Get the latest version | `git pull` then `pip install -r requirements.txt` | same |
 | Rebuild the document index | `rm -rf chroma_db` then restart | `rmdir /s /q chroma_db` then restart |
 | Leave the virtual env | `deactivate` | `deactivate` |
@@ -543,7 +549,7 @@ streamlit run app.py
 | `command not found: python3.12` / `py` not recognised | Python 3.12 isn't installed or not on PATH — redo step 1.3 (Windows: tick **Add to PATH**) |
 | `uv` / `uvx` not found | Redo step 1.4, then **close and reopen** the terminal |
 | `ModuleNotFoundError` | Activate the venv (step 3.1) and make sure you're in the project folder |
-| `215 passed` not shown | Run `pip install -r requirements.txt` again; paste the first error into an issue |
+| `256 passed, 3 skipped` (or `288 passed`) not shown | Run `pip install -r requirements.txt` again; paste the first error into an issue |
 | **Not ready: OPENAI_API_KEY is not set** | `.env` is missing, misnamed (e.g. `.env.txt`), or not in the project folder |
 | OpenAI error about quota / billing | Add credit in OpenAI **Settings → Billing** |
 | 🔴 **Jira** in the sidebar | Check the red error under it. Verify `JIRA_URL` (with `https://`), username = your Atlassian email, a fresh API token. Restart |
@@ -570,7 +576,7 @@ message — **remove any keys first**.
 - [ ] Git, Python 3.12 and uv installed (Part 1)
 - [ ] Repo cloned, `.venv` created and active (Parts 2–3)
 - [ ] `.env` created with a real `OPENAI_API_KEY` (Part 4)
-- [ ] `python -m pytest tests -q` → **215 passed** (Part 5)
+- [ ] `python -m pytest tests -q` → **256 passed, 3 skipped** (Part 5)
 - [ ] App opens at http://localhost:8501 and **📚 Research only** works (Part 5)
 - [ ] *(optional)* 🟢 Jira, and a ticket created after approval (Part 6)
 - [ ] *(optional)* 🟢 Gmail, and an email received after approval (Part 7)

@@ -143,6 +143,7 @@ Copy `.env.example` to `.env`. **Never commit `.env`** — it's in `.gitignore`.
 | `MAX_TOKENS_PER_REQUEST` / `MAX_COST_PER_REQUEST_USD` / `MAX_COST_PER_DAY_USD` | | `150000` / `0.25` / `5.00` | LLM budget |
 | `PRICE_<MODEL>` | | — | Override or add a price, `input,output` USD per 1M tokens |
 | `RAG_TOP_K` | | `5` | Passages each document search returns |
+| `EVAL_JUDGE_MODEL` / `EVAL_WORKERS` | | `gpt-4o-mini` / `8` | Evaluation layer: the LLM judge, and how many judge metrics run at once |
 | `MCP_PERSISTENT_SESSIONS` | | `true` | Keep one MCP session per server open (fast). `false` = new session per call (slow) |
 
 `.env.example` is grouped into **required** and **optional** sections with comments.
@@ -334,6 +335,76 @@ ticket outside `TEST`…), auto-approving because the tools are fake. Case **L10
 full-chain request: it checks the guards don't stop legitimate work. Reports:
 `results/redteam_report.md` and CSVs.
 
+> 📘 **For a session:** [docs/GUARDRAILS_AND_EVALUATION.md](docs/GUARDRAILS_AND_EVALUATION.md) explains
+> guardrails, the red team, offline evaluation and real-time evaluation together — with real
+> results, a demo script and what the LLM judge taught us.
+
+### Measuring quality: the evaluation layer (DeepEval)
+
+The red team measures **safety** (does it block attacks?). The evaluation layer measures
+**quality** — are the answers right, grounded and complete, did the agents take the right
+path and call the right tools, and at what cost?
+
+```bash
+pip install -r requirements-eval.txt          # DeepEval — optional, kept out of the core install
+python -m evals.run_evals --live              # run the agent on the golden set, record, score
+python -m evals.run_evals                     # re-score the recorded runs — free, no LLM
+python -m evals.run_evals --judge --suites all   # re-score with every LLM-judge metric
+deepeval test run evals/test_quality_gate.py  # the same checks as a DeepEval / pytest quality gate
+```
+
+**Run once, score many times.** `--live` runs the real agent on 14 golden questions (with the
+red team's recording fake Jira/Gmail — nothing is created or sent) and saves every run to
+`results/eval_runs.jsonl`. Re-scoring reads those recordings, so you can add metrics or
+change thresholds without paying for the agent again.
+
+| Suite | Metrics | Needs |
+|---|---|---|
+| **deterministic** | Route Correctness · Key Facts · Least Privilege · Forbidden Tools · Efficiency · Expected Tools | nothing — free, same input → same score |
+| **rag** | Answer Relevancy · Faithfulness · Contextual Relevancy | LLM judge |
+| **agent** | Tool Correctness · Task Completion · Argument Correctness · PII Leakage | LLM judge |
+| **qa** | Scope Adherence · Bug Report Quality · Email Summary Quality (GEval rubrics) | LLM judge |
+| **matrix** (`--suites all`) | Correctness · Faithfulness · Relevance · Completeness · Coherence · Clarity · Conciseness · Context Relevance · Groundedness · Instruction Following (GEval) | LLM judge |
+
+The deterministic metrics are real DeepEval `BaseMetric`s, so they show up in DeepEval's own
+reports. Faithfulness is scored against the text the AI **actually read** — after the
+tool-result guard cleaned it. Judge metrics run in parallel (`EVAL_WORKERS`, default 8) with
+`EVAL_JUDGE_MODEL` (default `gpt-4o-mini`); the report prints the agent's and the judge's cost.
+Reports: `results/eval_report.md` and `results/eval_scores.csv`. The runner exits 1 if a
+deterministic check fails (add `--strict` to gate on judge scores too).
+
+### Real-time evaluation (every request, as it happens)
+
+The offline layer scores a fixed golden set. **Real-time evaluation scores every real request
+in the app** — the same idea as LangSmith's online evaluators or production LLM monitoring.
+Live requests have no "right answer" to compare with, so it uses **reference-free** scores:
+
+| Kind | Metrics | Cost |
+|---|---|---|
+| **Parameters** (pure code) | Action Completion · Grounding · Privacy · Tool Success · Self-correction · Efficiency · Latency | free, instant |
+| **LLM as a judge** (DeepEval) | Faithfulness (vs the text the AI actually read) · Answer Relevancy · PII Leakage · Scope Adherence | ≈ 4 judge calls per request |
+
+What you see in the app:
+
+- a **📊 score chip** under every answer — *"📊 evaluating…"*, then e.g. *"📊 0.88 · 🟢 good"*
+- **🔎 Details → 📊 Evaluation**: every score with its reason, the judge cost
+- **📊 Live quality** in the sidebar: rolling averages over the last 20 requests, with alerts
+- **👍 / 👎** and **➕ Add to golden set** — a weak live answer becomes an offline test-case
+  candidate (`results/golden_candidates.jsonl`), so real use feeds the offline evaluation
+- with LangSmith on, **every score is attached to the request's trace** as feedback
+
+| Setting | Default | |
+|---|---|---|
+| `LIVE_EVAL` | `background` | `background`: answer first, scores a few seconds later · `gate`: score first, and a weak answer gets a **⚠️ Low confidence** warning · `off` |
+| `LIVE_EVAL_JUDGE` | `true` | `false` = parameters only (free) |
+| `LIVE_EVAL_SAMPLE` | `1.0` | share of requests evaluated |
+| `LIVE_EVAL_THRESHOLD` | `0.7` | alert line |
+| `LIVE_EVAL_TOKEN_BUDGET` / `LIVE_EVAL_SECONDS_BUDGET` | `30000` / `45` | for Efficiency and Latency |
+
+The parameters work without DeepEval; the judge needs `pip install -r requirements-eval.txt`.
+Results go to `logs/live_evals.jsonl` and the audit log, and the judge's cost counts toward the
+daily LLM budget. Code: `evals/live.py`.
+
 ### LLM cost & token budget (infrastructure)
 
 Every LLM call — including structured-output calls inside the supervisor and reviewer — is
@@ -394,7 +465,7 @@ the time goes. Already applied:
 ## 8. Testing
 
 ```bash
-python -m pytest tests -q        # 215 tests, ~20s, no API keys, no network
+python -m pytest tests -q        # 288 tests with DeepEval installed (256 without — the DeepEval-only tests skip), ~20s, no API keys, no network
 ```
 
 | File | Covers |
@@ -405,6 +476,8 @@ python -m pytest tests -q        # 215 tests, ~20s, no API keys, no network
 | `tests/test_guardrails_batch1_offline.py` | Hardening: 5 disguise tricks now blocked (and real Cyrillic text still allowed), outbound scrub, grounded IDs, action budget, scope reply, audit log (incl. "logging never breaks the app") |
 | `tests/test_redteam_offline.py` | Every red-team case by name; known gaps stay gaps; the live harness (recording fakes, auto-approve) with scripted models |
 | `tests/test_cost_budget_offline.py` | Prices and overrides, token counting **inside the graph**, the three limits, daily spend surviving a restart, the stop message |
+| `tests/test_evals_offline.py` | The evaluation layer: golden set, every deterministic metric on right and wrong runs, the harness through the **real graph** (route, tools, cleaned retrieval context, fake ticket and email), parallel judge scoring, reports and the gate. Skipped if DeepEval isn't installed |
+| `tests/test_live_eval_offline.py` | Real-time evaluation: every parameter on good and bad requests, the judge via fakes (failures never break the app), background scheduling, gate warning, sampling, daily cost, LangSmith feedback, 👍/👎, golden candidates, and the real app (📊 chip, Evaluation tab, gate mode, buttons) |
 | `tests/test_retriever_offline.py` | The RAG index never duplicates chunks and re-indexes edited docs |
 | `tests/test_app_smoke.py` | Runs the real `app.py` in Streamlit's test harness: renders, streams a request, approve, cancel, example buttons, trace link |
 
@@ -430,6 +503,9 @@ langgraph-testing-mastery/
 ├── audit.py                the audit log (logs/audit.jsonl)
 ├── cost.py                 LLM token & cost budget
 ├── redteam/                attack set + runner: python -m redteam.run_redteam [--live]
+├── evals/                  evaluation: offline (golden set, harness, metrics, runner, quality gate)
+│                           and real-time (live.py — every request scored as it happens)
+├── requirements-eval.txt   optional: DeepEval for the evaluation layer
 ├── llm.py                  provider-swappable model (OpenAI / Claude)
 ├── async_bridge.py         one background event loop for async MCP tools
 ├── agents/
@@ -445,7 +521,7 @@ langgraph-testing-mastery/
 ├── rag/retriever.py        load → split → embed → Chroma (idempotent index)
 ├── sample_docs/            the QA knowledge base (+ release_notes.md: the injection demo)
 ├── config/mcp_servers.json MCP server definitions
-├── tests/                  215 offline tests
+├── tests/                  288 offline tests (256 without DeepEval)
 ├── SETUP.md                step-by-step setup & user guide (start here)
 ├── QUESTIONS.md            question bank + demo flow
 ├── requirements.txt
